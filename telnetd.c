@@ -69,7 +69,7 @@ typedef struct
     uint32_t timeoutMax;
     struct tcp_pcb *pcb;
     packet_chain_t packet;
-    stream_rx_buffer_t rxbuf;
+    stream_rx_linebuffer_t rxbuf;
     stream_tx_buffer_t txbuf;
     TickType_t lastSendTime;
     err_t lastErr;
@@ -102,67 +102,50 @@ static void telnet_stream_handler (sessiondata_t *session);
 //
 static int32_t streamGetC (void)
 {
-    int32_t data;
-
-    if(streamSession.rxbuf.tail == streamSession.rxbuf.head)
-        return SERIAL_NO_DATA; // no data available else EOF
-
-    data = streamSession.rxbuf.data[streamSession.rxbuf.tail];                          // Get next character
-    streamSession.rxbuf.tail = BUFNEXT(streamSession.rxbuf.tail, streamSession.rxbuf);  // and update pointer
-
-    return data;
+    return stream_rx_linebuffer_get(&streamSession.rxbuf);
 }
 
 static inline uint16_t streamRxCount (void)
 {
-    uint_fast16_t head = streamSession.rxbuf.head, tail = streamSession.rxbuf.tail;
-
-    return BUFCOUNT(head, tail, RX_BUFFER_SIZE);
+    return stream_rx_linebuffer_count(&streamSession.rxbuf);
 }
 
 static uint16_t streamRxFree (void)
 {
-    return (RX_BUFFER_SIZE - 1) - streamRxCount();
+    return stream_rx_linebuffer_free(&streamSession.rxbuf);
 }
 
 static void streamRxFlush (void)
 {
-    streamSession.rxbuf.tail = streamSession.rxbuf.head;
+    stream_rx_linebuffer_flush(&streamSession.rxbuf);
 }
 
 static void streamRxCancel (void)
 {
-    streamSession.rxbuf.data[streamSession.rxbuf.head] = ASCII_CAN;
-    streamSession.rxbuf.tail = streamSession.rxbuf.head;
-    streamSession.rxbuf.head = BUFNEXT(streamSession.rxbuf.head, streamSession.rxbuf);
+    stream_rx_linebuffer_cancel(&streamSession.rxbuf);
 }
 
 static bool streamSuspendInput (bool suspend)
 {
-    return stream_rx_suspend(&streamSession.rxbuf, suspend);
+    return stream_rx_linebuffer_suspend(&streamSession.rxbuf, suspend);
 }
 
 static bool streamRxPutC (char c)
 {
-    bool mpg, overflow = false;
+    bool mpg, accepted = true;
 
     // discard input if MPG has taken over...
     if(!(mpg = hal.stream.type == StreamType_MPG)) {
         if(xSemaphoreTake(rx_mux, portMAX_DELAY) == pdTRUE) {
-            if(!enqueue_realtime_command(c)) {                              // If not a real time command attempt to buffer it
-                uint_fast16_t next_head = BUFNEXT(streamSession.rxbuf.head, streamSession.rxbuf);
-                if((overflow = next_head == streamSession.rxbuf.tail))      // If buffer full
-                    streamSession.rxbuf.overflow = true;                    // flag overflow
-                else {
-                    streamSession.rxbuf.data[streamSession.rxbuf.head] = c; // Add data to buffer and
-                    streamSession.rxbuf.head = next_head;                   // update pointer
-                }
-            }
+            if(!enqueue_realtime_command(c))                  // If not a real time command attempt to buffer it
+                accepted = stream_rx_linebuffer_put(&streamSession.rxbuf, c);
             xSemaphoreGive(rx_mux);
         }
     }
 
-    return mpg || !overflow;
+    // false => ring has no free line slot; caller (telnet_recv/telnet_stream_handler) rewinds and
+    // retries this same character once the consumer has drained a line - real TCP-level backpressure.
+    return mpg || accepted;
 }
 
 static bool streamPutC (const uint8_t c)
