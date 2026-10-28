@@ -151,7 +151,9 @@ const char *ssdp_handler_get (http_request_t *request)
 
     if(*location && (file = vfs_open("/ram/qry.xml", "w"))) {
 
-        sprintf(xml, xml_doc, hostname, mfg_url, hal.info, hal.board ? hal.board : "", GRBL_VERSION, hal.info, model_url, GRBL_BUILD, uuid);
+        // serialNumber is "%d", so the numeric form of the firmware version goes there - it used to
+        // carry the hand-typed GRBL_BUILD date. The cast is because FIRMWARE_VERSION_NUM is long.
+        sprintf(xml, xml_doc, hostname, mfg_url, hal.info, hal.board ? hal.board : "", FIRMWARE_VERSION, hal.info, model_url, (int)FIRMWARE_VERSION_NUM, uuid);
 
         vfs_puts(xml, file);
         vfs_close(file);
@@ -172,7 +174,7 @@ static void ssdp_send (ssdp_response_t response, const ip_addr_t *addr, u16_t po
 
     strcpy(ntst, response == SSDP_SearchReply ? "ST" : "NT");
 
-    add += sprintf(add, ssdp_common_hdr, "grblHAL", GRBL_VERSION, uuid, st, ntst, st);
+    add += sprintf(add, ssdp_common_hdr, "grblHAL", FIRMWARE_VERSION, uuid, st, ntst, st);
 
     if(response == SSDP_Down)
         strcpy(add, CRLF);
